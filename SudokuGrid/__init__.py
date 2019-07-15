@@ -2,11 +2,13 @@
 import collections
 import copy
 import itertools
+import random
 
-DEBUG = False
+DEBUG = True
+SHOW_EACH_MOVE = True
+SHUFFLE_RULES = True
 
 CHOICES = list(range(1, 10))
-CHOICES_STR = [str(d) for d in CHOICES]
 ROW_NAMES = CHOICES
 COL_NAMES = CHOICES
 
@@ -38,6 +40,14 @@ class Cell:
         self.possible = CHOICES.copy()
         self._given = None
         self.name = addr
+
+    @property
+    def row(self):
+        return self.name[0]
+
+    @property
+    def col(self):
+        return self.name[1]
 
     @property
     def given(self):
@@ -89,18 +99,29 @@ class Game:
         cellidx = itertools.chain.from_iterable(cross([r], COL_NAMES) for r in ROW_NAMES)
         self._cellDict = collections.OrderedDict([(idx, Cell(idx)) for idx in cellidx])
         for v, k in zip(values or [], self._cellDict.keys()):
-            if v in CHOICES_STR:
-                self._cellDict[k].given = int(v)
+            try:
+                if int(v) in CHOICES:
+                    self._cellDict[k].given = int(v)
+            except (ValueError, TypeError):
+                pass
         self._define_regions()
         self._rules = []
 
     def at(self, r, c):
         return self._cellDict[(r, c)]
 
-    def _row(self, row):
+    @property
+    def rows(self):
+        return (self.get_row(r) for r in ROW_NAMES)
+
+    @property
+    def cols(self):
+        return (self.get_col(r) for r in COL_NAMES)
+
+    def get_row(self, row):
         return [self._cellDict[i] for i in cross([row], COL_NAMES)]
 
-    def _col(self, col):
+    def get_col(self, col):
         return [self._cellDict[i] for i in cross(ROW_NAMES, [col])]
 
     def _define_regions(self):
@@ -122,7 +143,7 @@ class Game:
 
         def gen():
             for r in ROW_NAMES:
-                yield fmtline(self._row(r))
+                yield fmtline(self.get_row(r))
                 if r in [3, 6]:
                     yield dline
         return '\n'.join(gen())
@@ -134,7 +155,7 @@ class Game:
         return all(c.solved for c in self._cellDict.values())
 
     def verify_solution(self):
-        for R in self.regionCells:
+        for R in self.region_cells:
             for D in CHOICES:
                 exist = [c for c in R if D in c.possible]
                 if len(exist) != 1:
@@ -144,15 +165,33 @@ class Game:
 
     def solve(self, display=True):
         for t in range(99):
+            rules = self._rules
+            if SHUFFLE_RULES:
+                rules = rules.copy()
+                random.shuffle(rules)
             orig = copy.deepcopy(self._cellDict)
-            self._apply_rules()
+            if display and SHOW_EACH_MOVE:
+                prerule = copy.deepcopy(self._cellDict)
+                for r in rules:
+                    r()
+                    if prerule != self._cellDict:
+                        print('<' * 40, 'Changed by', r.__name__, '>' * 40)
+                        self.display()
+                        prerule = copy.deepcopy(self._cellDict)
+            else:
+                for r in rules:
+                    r()
             if orig == self._cellDict:
                 if display:
                     print('Unsolvable by rules')
                 break
+
             if display:
-                print('<' * 40, f'After round {t}', '>' * 40)
-                self.display()
+                if SHOW_EACH_MOVE:
+                    print('Completed round', t)
+                else:
+                    print('<' * 40, f'After round {t}', '>' * 40)
+                    self.display()
             if self.is_solved():
                 self.verify_solution()
                 break
@@ -184,8 +223,18 @@ class Game:
         reg_idc = itertools.chain.from_iterable(r for r in self._regions if rc in r)
         return [self._cellDict[c] for c in reg_idc if c != rc]
 
+    @staticmethod
+    def open_cells(cells, digit=None):
+        if digit:
+            return [c for c in cells if digit in c.possible]
+        return [c for c in cells]
+
+    @staticmethod
+    def possibilities(cells):
+        return [c.possible for c in cells if not c.solved]
+
     @property
-    def regionCells(self):
+    def region_cells(self):
         return [[self._cellDict[rc] for rc in reg] for reg in self._regions]
 
     @property
@@ -201,7 +250,8 @@ class SquareGame(Game):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._rules += [self.peer_rule, self.one_per_region, self.pairex_rule, self.pair_rule, self.tripex_rule,
-                        self.band_single_row_rule, self.stack_single_col_rule]
+                        self.band_single_row_rule, self.stack_single_col_rule,
+                        self.x_wing_row_rule, self.x_wing_col_rule]
 
     def peer_rule(self):
         for v in self._cellDict.values():
@@ -213,7 +263,7 @@ class SquareGame(Game):
                     p.remove(v.possible[0])
 
     def one_per_region(self):
-        for R in self.regionCells:
+        for R in self.region_cells:
             for D in CHOICES:
                 exist = [c for c in R if D in c.possible]
                 if not exist:
@@ -222,7 +272,7 @@ class SquareGame(Game):
                     exist[0].solve(D)
 
     def pair_rule(self):
-        for R in self.regionCells:
+        for R in self.region_cells:
             all_poss = [c.possible for c in R]
             pairs = [p for p in all_poss if len(p) == 2]
             for np in [p for p in pairs if pairs.count(p) == 2]:
@@ -240,7 +290,7 @@ class SquareGame(Game):
                 else:
                     outl.append(c)
             return inl, outl
-        for R in self.regionCells:
+        for R in self.region_cells:
             all_poss = [c.possible for c in R if not c.solved]
             totposs = set(itertools.chain.from_iterable(all_poss))
             for pp in itertools.combinations(totposs, 2):
@@ -261,7 +311,7 @@ class SquareGame(Game):
                 else:
                     outl.append(c)
             return inl, outl
-        for R in self.regionCells:
+        for R in self.region_cells:
             all_poss = [c.possible for c in R if not c.solved]
             totposs = set(itertools.chain.from_iterable(all_poss))
             for tt in [set(t) for t in itertools.combinations(totposs, 3)]:
@@ -300,6 +350,66 @@ class SquareGame(Game):
                             for c in [cc for cc in col if not cc.solved and cc not in b]:
                                 c.remove(ch)
 
+    def x_wing_row_rule(self):
+        """Solve case where 1 digit is present as only option in 2 matching columns for 2 different rows
+
+         https://www.livesudoku.com/en/tutorial-x-wing.php"""
+        for D in CHOICES:
+            xcells = collections.defaultdict(list)
+            # for the rows where the choice is exclusive to 2 cells; save the row/columns
+            for cells in (self.open_cells(R, D) for R in self.rows):
+                if len(cells) == 2:
+                    xcells[tuple(c.col for c in cells)].append(cells[0].row)
+            # for each case where only 2 columns have the choice possible in 2 exclusive rows
+            for cols, xrow in xcells.items():
+                if len(xrow) == 2:
+                    # remove the choice from all cells in these columns except for the exclusive cols
+                    others = list(c for C in cols for c in self.get_col(C) if D in c.possible and c.row not in xrow)
+                    if others:
+                        dprint(f'Found X-WING at columns {cols} for {D}, exclusive rows are {xrow}')
+                        for c in others:
+                            c.remove(D)
+
+    def x_wing_col_rule(self):
+        """Solve case where 1 digit is present as only option in 2 matching rows for 2 different columns
+
+         https://www.livesudoku.com/en/tutorial-x-wing.php"""
+        for D in CHOICES:
+            xcells = collections.defaultdict(list)
+            # for the columns where the choice is exclusive to 2 cells; save the rows/column
+            for cells in (self.open_cells(C, D) for C in self.cols):
+                if len(cells) == 2:
+                    xcells[tuple(c.row for c in cells)].append(cells[0].col)
+            # for each case where only 2 rows have the choice possible in 2 exclusive columns
+            for rows, xcol in xcells.items():
+                if len(xcol) == 2:
+                    # remove the choice from all cells in these rows except for the exclusive columns
+                    others = list(c for R in rows for c in self.get_row(R) if D in c.possible and c.col not in xcol)
+                    if others:
+                        dprint(f'Found X-WING at rows {rows} for {D}, exclusive columns are {xcol}')
+                        for c in others:
+                            c.remove(D)
+
+    def swordfish_row_rule(self):
+        """Solve case where 1 digit is present as option in only 3 matching columns for 3 different rows
+
+         https://www.livesudoku.com/en/tutorial-swordfish.php"""
+        for D in CHOICES:
+            xcells = collections.defaultdict(set)
+            # for the rows where the choice is exclusive to 2 cells; save the row/columns
+            for cells in (self.open_cells(R, D) for R in self.rows):
+                if len(cells) <= 3:
+                    xcells[tuple(c.col for c in cells)] |= cells[0].row
+            # for each case where only 2 columns have the choice possible in 2 exclusive rows
+            for cols, xrow in xcells.items():
+                if len(xrow) == 2:
+                    # remove the choice from all cells in these columns except for the exclusive cols
+                    others = list(c for C in cols for c in self.get_col(C) if D in c.possible and c.row not in xrow)
+                    if others:
+                        dprint(f'Found X-WING at columns {cols} for {D}, exclusive rows are {xrow}')
+                        for c in others:
+                            c.remove(D)
+
     def _define_regions(self):
         super()._define_regions()
         boxes = [cross(rs, cs) for rs in grouper(ROW_NAMES, 3) for cs in grouper(COL_NAMES, 3)]
@@ -309,11 +419,11 @@ class SquareGame(Game):
 
     def get_band(self, bdx):
         b = self._bands[bdx]
-        return (self._row(n) for n in b[0]), [[self._cellDict[rc] for rc in reg] for reg in b[1]]
+        return (self.get_row(n) for n in b[0]), [[self._cellDict[rc] for rc in reg] for reg in b[1]]
 
     def get_stack(self, bdx):
         b = self._stacks[bdx]
-        return (self._col(n) for n in b[0]), [[self._cellDict[rc] for rc in reg] for reg in b[1]]
+        return (self.get_col(n) for n in b[0]), [[self._cellDict[rc] for rc in reg] for reg in b[1]]
 
     @property
     def bands(self):
